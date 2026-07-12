@@ -114,30 +114,43 @@ async def answer_image(request: Request):
     messages = [{
         "role": "user",
         "content": [
-            {"type": "text", "text":
-                "You read charts, receipts, tables, invoices and pie charts EXACTLY.\n"
-                "Work in steps in a 'work' field, then give the final 'answer':\n"
-                "1. TRANSCRIBE every relevant label and number you see, one by one "
-                "(e.g. each bar's value, each receipt line, each table cell). Read "
-                "digits carefully; do not round or estimate.\n"
-                "2. If the question needs arithmetic (sum of all bars, grand total, "
-                "max/min of a column, total including tax), compute it step by step "
-                "and DOUBLE-CHECK the sum by re-adding.\n"
-                "3. Final 'answer': if NUMERIC, output ONLY the bare number — no "
-                "currency symbol, no thousands separators, no units, no words. Keep "
-                "decimals exactly as shown (e.g. a money total 4089.35 stays 4089.35). "
-                "If TEXT (e.g. the largest pie category), output it EXACTLY as written "
-                "in the image.\n"
-                "Return JSON: {\"work\": \"...\", \"answer\": \"...\"}.\n"
-                f"Question: {question}"},
+            {
+    "type": "text",
+    "text": (
+        "You are an expert OCR and document-reading system.\n\n"
+        "Read every visible word, label and number exactly as shown.\n"
+        "Never estimate or infer missing values.\n"
+        "If arithmetic is required, use only the values visible in the image.\n\n"
+        "Return ONLY valid JSON:\n"
+        "{\"answer\":\"...\"}\n\n"
+        "Rules:\n"
+        "- Numeric answers: only the number.\n"
+        "- No currency symbols.\n"
+        "- No units.\n"
+        "- No extra text.\n"
+        "- Text answers must match the image exactly.\n\n"
+        f"Question: {question}"
+    )
+},
             {"type": "image_url",
              "image_url": {"url": f"data:image/png;base64,{img_b64}", "detail": "high"}},
         ],
     }]
     try:
         # Full gpt-4o at high image detail reads small chart/receipt labels accurately.
-        out = parse_json(await chat(messages, model=config.VISION_MODEL, max_tokens=1200))
-        ans = normalize_answer(out.get("answer", ""))
+        out = parse_json(
+            await chat(
+                messages,
+                model=config.VISION_MODEL,
+                max_tokens=2000
+            )
+        )
+
+        ans = str(out.get("answer", "")).strip()
+
+        # Only remove a leading currency symbol if GPT accidentally includes one.
+        ans = re.sub(r"^[₹$€£]\s*", "", ans)
+        
     except Exception as e:
         ans = ""
     return {"answer": str(ans)}
