@@ -87,28 +87,30 @@ def parse_json(s):
 async def root():
     return {"ok": True, "email": config.EMAIL}
 # ================= Q2: /answer-image =================
-# ================= Q2: /answer-image =================
 
 def normalize_answer(ans):
-    s = str(ans).strip()
+    ans = str(ans).strip()
 
-    if not s:
+    if not ans:
         return ""
 
-    # remove markdown quotes
-    s = s.strip("`").strip()
+    ans = ans.strip("`").strip()
 
-    # remove leading currency only
-    s = re.sub(r"^[₹$€£]\s*", "", s)
+    # remove surrounding quotes
+    if ans.startswith('"') and ans.endswith('"'):
+        ans = ans[1:-1]
 
-    # remove commas from numbers
-    s = s.replace(",", "")
+    # remove leading currency
+    ans = re.sub(r"^[₹$€£]\s*", "", ans)
 
-    # integer like 240.0 -> 240
-    if re.fullmatch(r"-?\d+\.0+", s):
-        s = str(int(float(s)))
+    # remove commas inside numbers
+    ans = ans.replace(",", "")
 
-    return s
+    # 240.0 -> 240
+    if re.fullmatch(r"-?\d+\.0+", ans):
+        ans = str(int(float(ans)))
+
+    return ans
 
 
 @app.post("/answer-image")
@@ -116,99 +118,110 @@ async def answer_image(request: Request):
 
     body = await request.json()
 
-    image = body.get("image_base64", "")
+    image_b64 = body.get("image_base64", "")
     question = body.get("question", "")
 
-    prompt = (
-        "You are an OCR and visual reasoning engine.\n\n"
-
-        "Step 1:\n"
-        "Read EVERY visible word, number, label and value exactly.\n"
-
-        "Step 2:\n"
-        "If arithmetic is required, use ONLY those extracted values.\n"
-        "Check the arithmetic twice.\n"
-
-        "Step 3:\n"
-        "Return ONLY valid JSON:\n\n"
-
-        "{\n"
-        "\"transcription\":\"...\",\n"
-        "\"answer\":\"...\"\n"
-        "}\n\n"
-
-        "Rules:\n"
-
-        "- Never estimate.\n"
-        "- Never infer missing values.\n"
-        "- Text answers must match exactly.\n"
-        "- Numeric answers must contain digits only.\n"
-        "- No commas.\n"
-        "- No currency symbols.\n"
-        "- No units.\n"
-        "- No explanation.\n\n"
-
-        f"Question:\n{question}"
-    )
-
-    messages = [
-        {
-            "role": "user",
-            "content": [
+    payload = {
+        "contents": [{
+            "parts": [
                 {
-                    "type": "text",
-                    "text": prompt,
+                    "text":
+                    f"""
+You are an OCR expert.
+
+Read the image carefully.
+
+Question:
+{question}
+
+Rules:
+
+1. Read every visible number exactly.
+2. Read every visible word exactly.
+3. Never estimate.
+4. If arithmetic is required, calculate carefully.
+5. Check your arithmetic twice.
+6. Numeric answers:
+   - digits only
+   - decimal point only if needed
+   - no commas
+   - no currency
+   - no units
+7. Text answers:
+   - exactly as written
+
+Return ONLY valid JSON.
+
+{{"answer":"..."}}
+"""
                 },
                 {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/png;base64,{image}",
-                        "detail": "high",
-                    },
-                },
-            ],
-        }
+                    "inlineData": {
+                        "mimeType": "image/png",
+                        "data": image_b64
+                    }
+                }
+            ]
+        }]
+    }
+
+    answer = ""
+
+    MODELS = [
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-flash-latest",
     ]
 
-    ans = ""
+    async with httpx.AsyncClient(timeout=120) as client:
 
-    for _ in range(2):
-
-        try:
-
-            raw = await chat(
-                messages,
-                model=config.VISION_MODEL,
-                max_tokens=2200,
-            )
-
-            print(raw)
+        for model in MODELS:
 
             try:
-                out = parse_json(raw)
-                ans = out.get("answer", "")
-            except Exception:
 
-                m = re.search(
-                    r'"answer"\s*:\s*"([^"]+)"',
-                    raw,
-                    re.DOTALL,
+                r = await client.post(
+                    f"https://aipipe.org/geminiv1beta/models/{model}:generateContent",
+                    headers={
+                        "Authorization": f"Bearer {config.AIPIPE_TOKEN}"
+                    },
+                    json=payload,
                 )
 
-                if m:
-                    ans = m.group(1)
-                else:
-                    ans = raw
+                if r.status_code != 200:
+                    continue
 
-            ans = normalize_answer(ans)
+                data = r.json()
 
-            if ans:
-                break
+                text = (
+                    data["candidates"][0]
+                    ["content"]["parts"][0]["text"]
+                    .strip()
+                )
 
-        except Exception:
-            continue
+                try:
+                    obj = parse_json(text)
+                    answer = obj.get("answer", "")
+                except Exception:
+                    m = re.search(
+                        r'"answer"\s*:\s*"([^"]+)"',
+                        text,
+                        re.DOTALL,
+                    )
+                    if m:
+                        answer = m.group(1)
+                    else:
+                        answer = text
 
-    return {"answer": str(ans)}
+                answer = normalize_answer(answer)
+
+                if answer:
+                    break
+
+            except Exception:
+                continue
+
+    return {"answer": str(answer)}
 # ================= Q3 + Q7: /extract =================
 @app.post("/extract")
 async def extract(request: Request):
