@@ -87,77 +87,127 @@ def parse_json(s):
 async def root():
     return {"ok": True, "email": config.EMAIL}
 # ================= Q2: /answer-image =================
+# ================= Q2: /answer-image =================
+
 def normalize_answer(ans):
-    """Clean a vision answer so it matches the grader's expected string.
-    Numeric answers: strip currency/commas/units, keep the bare number.
-    Text answers (e.g. a category name): keep as-is, trimmed."""
     s = str(ans).strip()
+
     if not s:
-        return s
-    # If it looks numeric once symbols/commas/spaces are removed, return the number.
-    cleaned = re.sub(r"[,\s]", "", s)
-    cleaned = re.sub(r"[₹$€£%]", "", cleaned)
-    m = re.search(r"-?\d+(?:\.\d+)?", cleaned)
-    if m and re.fullmatch(r"[^\dA-Za-z]*-?\d[\d,.\s₹$€£%]*", s.strip()):
-        num = m.group(0)
-        # drop trailing ".0" so 240.0 -> 240 (matches integer-style expected values)
-        if "." in num:
-            num = num.rstrip("0").rstrip(".")
-        return num
+        return ""
+
+    # remove markdown quotes
+    s = s.strip("`").strip()
+
+    # remove leading currency only
+    s = re.sub(r"^[₹$€£]\s*", "", s)
+
+    # remove commas from numbers
+    s = s.replace(",", "")
+
+    # integer like 240.0 -> 240
+    if re.fullmatch(r"-?\d+\.0+", s):
+        s = str(int(float(s)))
+
     return s
+
 
 @app.post("/answer-image")
 async def answer_image(request: Request):
+
     body = await request.json()
-    img_b64 = body.get("image_base64", "")
+
+    image = body.get("image_base64", "")
     question = body.get("question", "")
-    messages = [{
-        "role": "user",
-        "content": [
-            {
-                "type": "text",
-                "text": (
-                    "You are an expert at reading charts, receipts, invoices, tables and scanned documents.\n\n"
-                    "First read every relevant number and label exactly as shown.\n"
-                    "Never estimate values.\n"
-                    "Never invent missing information.\n"
-                    "If the question requires arithmetic, perform it only using values visible in the image.\n\n"
-                    "Return ONLY valid JSON in this exact format:\n"
-                    "{"
-                    "\"transcription\":\"...\","
-                    "\"answer\":\"...\""
-                    "}\n\n"
-                    "Rules:\n"
-                    "- transcription: list only the values you used.\n"
-                    "- answer: final answer only.\n"
-                    "- Numeric answers: digits only, no commas, no currency symbols, no units.\n"
-                    "- Text answers: copy exactly from the image.\n\n"
-                    f"Question: {question}"
+
+    prompt = (
+        "You are an OCR and visual reasoning engine.\n\n"
+
+        "Step 1:\n"
+        "Read EVERY visible word, number, label and value exactly.\n"
+
+        "Step 2:\n"
+        "If arithmetic is required, use ONLY those extracted values.\n"
+        "Check the arithmetic twice.\n"
+
+        "Step 3:\n"
+        "Return ONLY valid JSON:\n\n"
+
+        "{\n"
+        "\"transcription\":\"...\",\n"
+        "\"answer\":\"...\"\n"
+        "}\n\n"
+
+        "Rules:\n"
+
+        "- Never estimate.\n"
+        "- Never infer missing values.\n"
+        "- Text answers must match exactly.\n"
+        "- Numeric answers must contain digits only.\n"
+        "- No commas.\n"
+        "- No currency symbols.\n"
+        "- No units.\n"
+        "- No explanation.\n\n"
+
+        f"Question:\n{question}"
+    )
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": prompt,
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{image}",
+                        "detail": "high",
+                    },
+                },
+            ],
+        }
+    ]
+
+    ans = ""
+
+    for _ in range(2):
+
+        try:
+
+            raw = await chat(
+                messages,
+                model=config.VISION_MODEL,
+                max_tokens=2200,
+            )
+
+            print(raw)
+
+            try:
+                out = parse_json(raw)
+                ans = out.get("answer", "")
+            except Exception:
+
+                m = re.search(
+                    r'"answer"\s*:\s*"([^"]+)"',
+                    raw,
+                    re.DOTALL,
                 )
-            },
-            {"type": "image_url",
-             "image_url": {"url": f"data:image/png;base64,{img_b64}", "detail": "high"}},
-        ],
-    }]
-    try:
-        # Full gpt-4o at high image detail reads small chart/receipt labels accurately.
-        raw = await chat(
-            messages,
-            model=config.VISION_MODEL,
-            max_tokens=2500
-        )
 
-        print(raw)
+                if m:
+                    ans = m.group(1)
+                else:
+                    ans = raw
 
-        out = parse_json(raw)
+            ans = normalize_answer(ans)
 
-        ans = str(out.get("answer", "")).strip()
+            if ans:
+                break
 
-        # Only remove a leading currency symbol if GPT accidentally includes one.
-        ans = re.sub(r"^[₹$€£]\s*", "", ans)
-        
-    except Exception as e:
-        ans = ""
+        except Exception:
+            continue
+
     return {"answer": str(ans)}
 # ================= Q3 + Q7: /extract =================
 @app.post("/extract")
