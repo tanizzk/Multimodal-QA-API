@@ -115,36 +115,41 @@ async def answer_image(request: Request):
         "role": "user",
         "content": [
             {
-    "type": "text",
-    "text": (
-        "You are an expert OCR and document-reading system.\n\n"
-        "Read every visible word, label and number exactly as shown.\n"
-        "Never estimate or infer missing values.\n"
-        "If arithmetic is required, use only the values visible in the image.\n\n"
-        "Return ONLY valid JSON:\n"
-        "{\"answer\":\"...\"}\n\n"
-        "Rules:\n"
-        "- Numeric answers: only the number.\n"
-        "- No currency symbols.\n"
-        "- No units.\n"
-        "- No extra text.\n"
-        "- Text answers must match the image exactly.\n\n"
-        f"Question: {question}"
-    )
-},
+                "type": "text",
+                "text": (
+                    "You are an expert at reading charts, receipts, invoices, tables and scanned documents.\n\n"
+                    "First read every relevant number and label exactly as shown.\n"
+                    "Never estimate values.\n"
+                    "Never invent missing information.\n"
+                    "If the question requires arithmetic, perform it only using values visible in the image.\n\n"
+                    "Return ONLY valid JSON in this exact format:\n"
+                    "{"
+                    "\"transcription\":\"...\","
+                    "\"answer\":\"...\""
+                    "}\n\n"
+                    "Rules:\n"
+                    "- transcription: list only the values you used.\n"
+                    "- answer: final answer only.\n"
+                    "- Numeric answers: digits only, no commas, no currency symbols, no units.\n"
+                    "- Text answers: copy exactly from the image.\n\n"
+                    f"Question: {question}"
+                )
+            },
             {"type": "image_url",
              "image_url": {"url": f"data:image/png;base64,{img_b64}", "detail": "high"}},
         ],
     }]
     try:
         # Full gpt-4o at high image detail reads small chart/receipt labels accurately.
-        out = parse_json(
-            await chat(
-                messages,
-                model=config.VISION_MODEL,
-                max_tokens=2000
-            )
+        raw = await chat(
+            messages,
+            model=config.VISION_MODEL,
+            max_tokens=2500
         )
+
+        print(raw)
+
+        out = parse_json(raw)
 
         ans = str(out.get("answer", "")).strip()
 
